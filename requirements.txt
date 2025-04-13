@@ -1,4 +1,4 @@
-binance==3.1.1
-python-dotenv==1.0.0
+python-binance==1.0.19
 aiohttp==3.9.3
 async-timeout==4.0.3
+python-dotenv==1.0.0
