@@ -23,8 +23,8 @@ class FundingFeeOptimizer:
         self.SYMBOL = 'VIDTUSDT'  # Trading pair
         self.QTY = 50000  # Quantity in coins
         self.LEVERAGE = 7  # Leverage
-        self.ENTRY_TARGET = self._calc_target(23, 29, 59, 150)  # Entry time (11:29:59:150 PM IST)
-        self.EXIT_TARGET = self._calc_target(23, 30, 0, 50)  # Exit time (11:30:00:050 PM IST)
+        self.ENTRY_TARGET = self._calc_target(1, 29, 59, 150)  # Entry time (01:29:59:150 AM IST)
+        self.EXIT_TARGET = self._calc_target(1, 30, 0, 50)  # Exit time (01:30:00:050 AM IST)
         self.time_offset = 0.0
         self.orderbook = None
         self.price_precision = None
