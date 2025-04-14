@@ -22,12 +22,11 @@ IST = timezone(timedelta(hours=5, minutes=30))  # Correct timezone for IST
 
 class PrecisionFuturesTrader:
     def __init__(self):
-        self.SYMBOL = 'VTHOUSDT'  # Updated coin name
-        self.FIXED_QTY = 180000  # Updated quantity
-        self.LEVERAGE = 20  # Updated leverage
-        # Updated times for 05:29:59.150 PM and 05:30:00.050 PM IST
-        self.ENTRY_TIME = (17, 29, 59, 150)  # 05:29:59.150 PM
-        self.EXIT_TIME = (17, 30, 0, 50)     # 05:30:00.050 PM
+        self.SYMBOL = 'VTHOUSDT'  # Corrected coin name
+        self.FIXED_QTY = 150000  # Updated quantity
+        self.LEVERAGE = 15  # Updated leverage
+        # Updated time for 09:29:59.150 PM IST
+        self.ENTRY_TIME = (21, 29, 59, 150)  # 09:29:59.150 PM
         self.time_offset = 0.0
         self.order_chunks = 1
         self.executed_orders = []
@@ -79,25 +78,6 @@ class PrecisionFuturesTrader:
         )
         return target.timestamp()
 
-    async def _adjust_chunks(self, async_client):
-        """Dynamically adjust chunk size based on order book depth"""
-        try:
-            depth = await async_client.futures_order_book(symbol=self.SYMBOL)
-            bids = depth['bids']
-            order_book_depth = sum(float(bid[1]) for bid in bids)  # Summing bid quantities
-
-            if order_book_depth > 200:
-                self.order_chunks = 1  # Execute as a single order
-            elif 100 <= order_book_depth <= 200:
-                self.order_chunks = 3  # Split into 2-3 chunks
-            else:
-                self.order_chunks = 5  # Split into 5+ chunks
-
-            logging.info(f"Order book depth: {order_book_depth} | Chunks adjusted to: {self.order_chunks}")
-
-        except Exception as e:
-            logging.error(f"Failed to adjust chunks: {e}")
-
     async def _precision_wait(self, target_ts):
         """Enhanced wait with high precision"""
         while True:
@@ -107,22 +87,36 @@ class PrecisionFuturesTrader:
             remaining = target_ts - current
             await asyncio.sleep(max(remaining * 0.5, 0.001))
 
-    async def _execute_split_orders(self, async_client, side):
-        """Execute orders in chunks with a small delay"""
-        chunk_size = self.FIXED_QTY // self.order_chunks
-        for i in range(self.order_chunks):
-            try:
-                await async_client.futures_create_order(
-                    symbol=self.SYMBOL,
-                    side=side,
-                    type='MARKET',
-                    quantity=chunk_size,
-                    newOrderRespType='FULL'
-                )
-                logging.info(f"Chunk {i+1}/{self.order_chunks} executed")
-                await asyncio.sleep(0.05)  # 50ms between chunks
-            except Exception as e:
-                logging.error(f"Chunk {i+1} failed: {e}")
+    async def _execute_order(self, async_client, side):
+        """Execute a market order"""
+        try:
+            await async_client.futures_create_order(
+                symbol=self.SYMBOL,
+                side=side,
+                type='MARKET',
+                quantity=self.FIXED_QTY,
+                newOrderRespType='FULL'
+            )
+            logging.info(f"Market {side} order executed successfully.")
+        except Exception as e:
+            logging.error(f"Failed to execute market {side} order: {e}")
+            raise
+
+    async def _wait_for_funding_fee(self, async_client):
+        """Wait for funding fee to be credited"""
+        try:
+            while True:
+                income_history = await async_client.futures_income_history(symbol=self.SYMBOL, incomeType='FUNDING_FEE')
+                if income_history:
+                    latest_income = income_history[-1]
+                    funding_time = latest_income['time'] / 1000  # Convert to seconds
+                    if funding_time >= self._get_server_time() - 60:  # Funding fee received within the last minute
+                        logging.info(f"Funding fee received: {latest_income}")
+                        return
+                await asyncio.sleep(1)  # Check every second
+        except Exception as e:
+            logging.error(f"Failed to verify funding fee: {e}")
+            raise
 
     async def execute_strategy(self):
         async_client = await AsyncClient.create(
@@ -130,23 +124,23 @@ class PrecisionFuturesTrader:
         )  # Await the AsyncClient creation
 
         try:
-            bsm = BinanceSocketManager(async_client)
             await self._verify_connection(async_client)
             await self._set_leverage(async_client)
             await self._calibrate_time_sync(async_client)
-            await self._adjust_chunks(async_client)  # Dynamically adjust chunks based on order book depth
 
             # Entry execution
             entry_target = self._calculate_target(*self.ENTRY_TIME)
             await self._precision_wait(entry_target)
             logging.info("\n=== ENTRY TRIGGERED ===")
-            await self._execute_split_orders(async_client, 'BUY')
+            await self._execute_order(async_client, 'BUY')
+
+            # Wait for funding fee to be credited
+            logging.info("Waiting for funding fee to be credited...")
+            await self._wait_for_funding_fee(async_client)
 
             # Exit execution
-            exit_target = self._calculate_target(*self.EXIT_TIME)
-            await self._precision_wait(exit_target)
             logging.info("\n=== EXIT TRIGGERED ===")
-            await self._execute_split_orders(async_client, 'SELL')
+            await self._execute_order(async_client, 'SELL')
 
         except Exception as e:
             logging.error(f"Strategy failed: {e}")
