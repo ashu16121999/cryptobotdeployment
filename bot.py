@@ -23,9 +23,9 @@ IST = timezone(timedelta(hours=5, minutes=30))  # Indian Standard Time
 
 class PrecisionFuturesTrader:
     def __init__(self):
-        self.SYMBOL = 'VTHOUSDT'  # Trading pair
-        self.FIXED_QTY = 200000  # Quantity
-        self.LEVERAGE = 22  # Leverage
+        self.SYMBOL = 'IPUSDT'  # Trading pair
+        self.FIXED_QTY = 140  # Quantity
+        self.LEVERAGE = 20  # Leverage
         self.ENTRY_TIME = (1, 29, 59, 150)  # 01:29:59.150 AM IST (updated time)
         self.time_offset = 0.0
 
