@@ -1,4 +1,4 @@
-from binance import AsyncClient, BinanceSocketManager
+from binance import AsyncClient
 import os
 import asyncio
 import logging
@@ -8,28 +8,26 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure logging with milliseconds in the timestamp
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format='%(asctime)s,%(msecs)03d - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
         logging.FileHandler('bot_debug.log'),
         logging.StreamHandler()
     ]
 )
 
-IST = timezone(timedelta(hours=5, minutes=30))  # Correct timezone for IST
+IST = timezone(timedelta(hours=5, minutes=30))  # Indian Standard Time
 
 class PrecisionFuturesTrader:
     def __init__(self):
-        self.SYMBOL = 'VTHOUSDT'  # Corrected coin name
-        self.FIXED_QTY = 150000  # Updated quantity
-        self.LEVERAGE = 15  # Updated leverage
-        # Updated time for 09:29:59.150 PM IST
-        self.ENTRY_TIME = (21, 29, 59, 150)  # 09:29:59.150 PM
+        self.SYMBOL = 'VTHOUSDT'  # Trading pair
+        self.FIXED_QTY = 200000  # Quantity
+        self.LEVERAGE = 22  # Leverage
+        self.ENTRY_TIME = (1, 29, 59, 150)  # 01:29:59.150 AM IST (updated time)
         self.time_offset = 0.0
-        self.order_chunks = 1
-        self.executed_orders = []
 
     async def _verify_connection(self, async_client):
         """Verify API connectivity"""
@@ -103,17 +101,31 @@ class PrecisionFuturesTrader:
             raise
 
     async def _wait_for_funding_fee(self, async_client):
-        """Wait for funding fee to be credited"""
+        """Wait for funding fee to be credited with optimized polling"""
         try:
+            latest_funding_time = 0
+
             while True:
-                income_history = await async_client.futures_income_history(symbol=self.SYMBOL, incomeType='FUNDING_FEE')
+                # Fetch funding fee history for the trading pair
+                income_history = await async_client.futures_income_history(
+                    symbol=self.SYMBOL,
+                    incomeType='FUNDING_FEE',
+                    limit=1  # Fetch only the latest funding fee record
+                )
+
                 if income_history:
-                    latest_income = income_history[-1]
+                    latest_income = income_history[0]
                     funding_time = latest_income['time'] / 1000  # Convert to seconds
-                    if funding_time >= self._get_server_time() - 60:  # Funding fee received within the last minute
+
+                    # Check if latest funding fee is newer than the stored one
+                    if funding_time > latest_funding_time:
+                        latest_funding_time = funding_time
                         logging.info(f"Funding fee received: {latest_income}")
-                        return
-                await asyncio.sleep(1)  # Check every second
+                        return  # Exit the loop as funding fee is detected
+
+                # Sleep for 200ms to reduce delay and stay within Binance rate limits
+                await asyncio.sleep(0.2)
+
         except Exception as e:
             logging.error(f"Failed to verify funding fee: {e}")
             raise
@@ -121,7 +133,7 @@ class PrecisionFuturesTrader:
     async def execute_strategy(self):
         async_client = await AsyncClient.create(
             os.getenv('API_KEY'), os.getenv('API_SECRET')
-        )  # Await the AsyncClient creation
+        )
 
         try:
             await self._verify_connection(async_client)
@@ -146,6 +158,7 @@ class PrecisionFuturesTrader:
             logging.error(f"Strategy failed: {e}")
         finally:
             await async_client.close_connection()  # Close the AsyncClient connection
+
 
 if __name__ == "__main__":
     trader = PrecisionFuturesTrader()
