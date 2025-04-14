@@ -1,194 +1,158 @@
-from binance import AsyncClient
+from binance import AsyncClient, BinanceSocketManager
 import os
 import asyncio
 import logging
-import time
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
+# Load environment variables
 load_dotenv()
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    handlers=[
+        logging.FileHandler('bot_debug.log'),
+        logging.StreamHandler()
+    ]
 )
-logger = logging.getLogger()
 
-IST = timezone(timedelta(hours=5, minutes=30))
+IST = timezone(timedelta(hours=5, minutes=30))  # Correct timezone for IST
 
-class FundingFeeOptimizer:
+class PrecisionFuturesTrader:
     def __init__(self):
-        self.SYMBOL = 'VIDTUSDT'  # Updated Trading pair
-        self.QTY = 65000  # Updated Quantity in coins
-        self.LEVERAGE = 7  # Updated Leverage
-        self.ENTRY_TARGET = self._calc_target(13, 29, 59, 150)  # Entry time (01:29:59:150 PM IST)
-        self.EXIT_TARGET = self._calc_target(13, 30, 0, 50)  # Exit time (01:30:00:050 PM IST)
+        self.SYMBOL = 'FUNUSDT'  # Updated coin name
+        self.FIXED_QTY = 20000  # Updated quantity
+        self.LEVERAGE = 20  # Updated leverage
+        # Updated times for 05:29:59.150 PM and 05:30:00.050 PM IST
+        self.ENTRY_TIME = (17, 29, 59, 150)  # 05:29:59.150 PM
+        self.EXIT_TIME = (17, 30, 0, 50)     # 05:30:00.050 PM
         self.time_offset = 0.0
-        self.orderbook = None
-        self.price_precision = None
-        self.quantity_precision = None
-        self.min_price = None
-        self.min_qty = None
-        logging.info(f"Bot initialized with ENTRY_TARGET: {self.ENTRY_TARGET}, EXIT_TARGET: {self.EXIT_TARGET}")
+        self.order_chunks = 1
+        self.executed_orders = []
 
-    def _calc_target(self, hour, minute, second, millis):
-        """Calculate target timestamp with IST conversion"""
-        now = datetime.now(IST)
-        target = now.replace(
-            hour=hour, minute=minute, second=second,
-            microsecond=millis * 1000
-        )
-        return target.timestamp() + (1 if target < now else 0)
-
-    async def _sync_time(self, client):
-        """Sync time with Binance server using REST API"""
+    async def _verify_connection(self, async_client):
+        """Verify API connectivity"""
         try:
-            server_time = (await client.futures_time())['serverTime'] / 1000
-            self.time_offset = server_time - time.perf_counter()
-            logging.info(f"Time synchronized with Binance server. Offset: {self.time_offset}s")
+            account_info = await async_client.futures_account()
+            if not account_info['canTrade']:
+                raise PermissionError("Futures trading disabled")
+            logging.info("API connection verified")
         except Exception as e:
-            logging.error(f"Failed to sync time via REST API: {e}")
+            logging.error(f"Connection failed: {e}")
             raise
 
-    async def _get_precision(self, client, symbol):
-        """Fetch precision rules for the trading pair"""
-        exchange_info = await client.futures_exchange_info()
-        for symbol_info in exchange_info['symbols']:
-            if symbol_info['symbol'] == symbol:
-                self.price_precision = int(symbol_info['pricePrecision'])
-                self.quantity_precision = int(symbol_info['quantityPrecision'])
-                self.min_price = float(symbol_info['filters'][0]['minPrice'])
-                self.min_qty = float(symbol_info['filters'][1]['minQty'])
-                logging.info(f"Fetched precision rules for {symbol}: price_precision={self.price_precision}, quantity_precision={self.quantity_precision}, min_price={self.min_price}, min_qty={self.min_qty}")
-                return
-        raise ValueError(f"Symbol {symbol} not found in exchange info")
+    async def _calibrate_time_sync(self, async_client):
+        """Time synchronization with dynamic compensation"""
+        measurements = []
+        for _ in range(10):
+            try:
+                t0 = asyncio.get_event_loop().time()
+                server_time = (await async_client.futures_time())['serverTime'] / 1000
+                t1 = asyncio.get_event_loop().time()
+                measurements.append((t1 - t0, server_time - (t0 + t1) / 2))
+            except Exception as e:
+                logging.warning(f"Time sync failed: {e}")
 
-    def _round_to_precision(self, value, precision):
-        """Round a value to the specified number of decimal places"""
-        return round(value, precision)
+        avg_latency = sum(m[0] for m in measurements) / len(measurements)
+        self.time_offset = sum(m[1] for m in measurements) / len(measurements)
+        logging.info(f"Time synced | Offset: {self.time_offset*1000:.2f}ms | Latency: {avg_latency*1000:.2f}ms")
 
-    def _validate_price_and_quantity(self, price, qty):
-        """Validate price and quantity against Binance's minimum requirements"""
-        if price < self.min_price:
-            raise ValueError(f"Price {price} is below the minimum allowed price {self.min_price}")
-        if qty < self.min_qty:
-            raise ValueError(f"Quantity {qty} is below the minimum allowed quantity {self.min_qty}")
-
-    async def _get_orderbook(self, client):
-        """Fetch optimized order book snapshot"""
-        self.orderbook = await client.futures_order_book(
+    async def _set_leverage(self, async_client):
+        await async_client.futures_change_leverage(
             symbol=self.SYMBOL,
-            limit=5
+            leverage=self.LEVERAGE
         )
-        logging.info(f"Order book fetched for {self.SYMBOL}")
 
-    def _get_limit_price(self, side):
-        """Calculate aggressive limit price from order book, rounded to precision"""
-        if side == 'BUY':
-            price = float(self.orderbook['asks'][1][0]) * 1.0001  # Above 2nd ask
-        else:
-            price = float(self.orderbook['bids'][1][0]) * 0.9999  # Below 2nd bid
-        # Round price to allowed precision
-        return self._round_to_precision(price, self.price_precision)
+    def _get_server_time(self):
+        return asyncio.get_event_loop().time() + self.time_offset
 
-    async def _execute_market_order(self, client, side):
-        """Execute a market order"""
+    def _calculate_target(self, hour, minute, second, millisecond):
+        """Calculate the target timestamp in Binance server time"""
+        now = datetime.fromtimestamp(self._get_server_time(), IST)
+        target = now.replace(
+            hour=hour,
+            minute=minute,
+            second=second,
+            microsecond=millisecond * 1000
+        )
+        return target.timestamp()
+
+    async def _adjust_chunks(self, async_client):
+        """Dynamically adjust chunk size based on order book depth"""
         try:
-            await client.futures_create_order(
-                symbol=self.SYMBOL,
-                side=side,
-                type='MARKET',
-                quantity=self.QTY
-            )
-            logging.info(f"Market {side} order executed successfully.")
-        except Exception as e:
-            logging.error(f"Failed to execute market {side} order: {e}")
-            raise
+            depth = await async_client.futures_order_book(symbol=self.SYMBOL)
+            bids = depth['bids']
+            order_book_depth = sum(float(bid[1]) for bid in bids)  # Summing bid quantities
 
-    async def _hybrid_execute(self, client, side):
-        """Limit + Market fallback execution with guaranteed position closure"""
-        try:
-            # Phase 1: Try limit order
-            limit_price = self._get_limit_price(side)
-            logging.info(f"Calculated limit price for {side}: {limit_price}")
-            self._validate_price_and_quantity(limit_price, self.QTY)
-            order = await client.futures_create_order(
-                symbol=self.SYMBOL,
-                side=side,
-                type='LIMIT',
-                timeInForce='IOC',
-                quantity=self.QTY,
-                price=limit_price
-            )
-            
-            # Check immediate fill
-            if float(order['executedQty']) >= self.QTY * 0.95:
-                logging.info(f"Limit {side} order filled successfully.")
-                return True
+            if order_book_depth > 200:
+                self.order_chunks = 1  # Execute as a single order
+            elif 100 <= order_book_depth <= 200:
+                self.order_chunks = 3  # Split into 2-3 chunks
             else:
-                logging.warning(f"Limit {side} order not fully filled. Attempting market fallback...")
-        
-        except Exception as e:
-            logging.error(f"Limit {side} order failed with error: {e}. Switching to market order...")
+                self.order_chunks = 5  # Split into 5+ chunks
 
-        # Phase 2: Market order fallback
-        try:
-            await self._execute_market_order(client, side)
-            logging.info(f"Market {side} order executed after limit order failure.")
-        except Exception as e:
-            logging.error(f"Market {side} order execution failed: {e}")
-            raise e  # Re-raise the exception if the fallback fails
+            logging.info(f"Order book depth: {order_book_depth} | Chunks adjusted to: {self.order_chunks}")
 
-    async def _precision_countdown(self, target):
-        """Microsecond-precise wait with spinlock"""
-        logging.info(f"Waiting for target time: {target}")
-        while (time.perf_counter() + self.time_offset) < target - 0.005:
-            await asyncio.sleep(0)
-        while (time.perf_counter() + self.time_offset) < target:
-            pass
-        logging.info(f"Reached target time: {target}")
+        except Exception as e:
+            logging.error(f"Failed to adjust chunks: {e}")
+
+    async def _precision_wait(self, target_ts):
+        """Enhanced wait with high precision"""
+        while True:
+            current = self._get_server_time()
+            if current >= target_ts:
+                return
+            remaining = target_ts - current
+            await asyncio.sleep(max(remaining * 0.5, 0.001))
+
+    async def _execute_split_orders(self, async_client, side):
+        """Execute orders in chunks with a small delay"""
+        chunk_size = self.FIXED_QTY // self.order_chunks
+        for i in range(self.order_chunks):
+            try:
+                await async_client.futures_create_order(
+                    symbol=self.SYMBOL,
+                    side=side,
+                    type='MARKET',
+                    quantity=chunk_size,
+                    newOrderRespType='FULL'
+                )
+                logging.info(f"Chunk {i+1}/{self.order_chunks} executed")
+                await asyncio.sleep(0.05)  # 50ms between chunks
+            except Exception as e:
+                logging.error(f"Chunk {i+1} failed: {e}")
 
     async def execute_strategy(self):
-        logging.info("Starting execution strategy...")
-        client = await AsyncClient.create(
-            os.getenv('API_KEY'),
-            os.getenv('API_SECRET')
-        )
+        async_client = await AsyncClient.create(
+            os.getenv('API_KEY'), os.getenv('API_SECRET')
+        )  # Await the AsyncClient creation
 
         try:
-            # Initial setup
-            await self._sync_time(client)
-            await self._get_precision(client, self.SYMBOL)
-            await client.futures_change_leverage(
-                symbol=self.SYMBOL,
-                leverage=self.LEVERAGE
-            )
-            logging.info(f"Leverage set to {self.LEVERAGE}x for {self.SYMBOL}")
+            bsm = BinanceSocketManager(async_client)
+            await self._verify_connection(async_client)
+            await self._set_leverage(async_client)
+            await self._calibrate_time_sync(async_client)
+            await self._adjust_chunks(async_client)  # Dynamically adjust chunks based on order book depth
 
-            # Ensure quantity is rounded to allowed precision
-            self.QTY = self._round_to_precision(self.QTY, self.quantity_precision)
-            self._validate_price_and_quantity(1.0, self.QTY)  # Example validation
+            # Entry execution
+            entry_target = self._calculate_target(*self.ENTRY_TIME)
+            await self._precision_wait(entry_target)
+            logging.info("\n=== ENTRY TRIGGERED ===")
+            await self._execute_split_orders(async_client, 'BUY')
 
-            # Entry execution (Market Order)
-            logging.info(f"Preparing to execute entry order at {self.ENTRY_TARGET}")
-            await self._precision_countdown(self.ENTRY_TARGET - 0.15)
-            await self._execute_market_order(client, 'BUY')
+            # Exit execution
+            exit_target = self._calculate_target(*self.EXIT_TIME)
+            await self._precision_wait(exit_target)
+            logging.info("\n=== EXIT TRIGGERED ===")
+            await self._execute_split_orders(async_client, 'SELL')
 
-            # Exit execution (Hybrid: Limit + Market Fallback)
-            logging.info(f"Preparing to execute exit order at {self.EXIT_TARGET}")
-            await self._precision_countdown(self.EXIT_TARGET - 0.15)
-            await self._get_orderbook(client)
-            await self._hybrid_execute(client, 'SELL')
-
+        except Exception as e:
+            logging.error(f"Strategy failed: {e}")
         finally:
-            await client.close_connection()
-            logging.info("Bot execution completed. Connection closed.")
+            await async_client.close_connection()  # Close the AsyncClient connection
 
 if __name__ == "__main__":
-    try:
-        logging.info("Starting FundingFeeOptimizer bot...")
-        asyncio.run(FundingFeeOptimizer().execute_strategy())
-    except Exception as e:
-        logging.error(f"Unhandled exception occurred: {e}")
+    trader = PrecisionFuturesTrader()
+    asyncio.run(trader.execute_strategy())
