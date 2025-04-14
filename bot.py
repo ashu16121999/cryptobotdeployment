@@ -22,8 +22,8 @@ IST = timezone(timedelta(hours=5, minutes=30))  # Correct timezone for IST
 
 class PrecisionFuturesTrader:
     def __init__(self):
-        self.SYMBOL = 'FUNUSDT'  # Updated coin name
-        self.FIXED_QTY = 80000  # Updated quantity
+        self.SYMBOL = 'VTHOUSDT'  # Updated coin name
+        self.FIXED_QTY = 180000  # Updated quantity
         self.LEVERAGE = 20  # Updated leverage
         # Updated times for 05:29:59.150 PM and 05:30:00.050 PM IST
         self.ENTRY_TIME = (17, 29, 59, 150)  # 05:29:59.150 PM
