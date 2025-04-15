@@ -23,10 +23,10 @@ IST = timezone(timedelta(hours=5, minutes=30))  # Indian Standard Time
 
 class PrecisionFuturesTrader:
     def __init__(self):
-        self.SYMBOL = 'ANIMEUSDT'  # Trading pair
-        self.FIXED_QTY = 25000  # Quantity
+        self.SYMBOL = 'MELANIAUSDT'  # Trading pair
+        self.FIXED_QTY = 1200  # Quantity
         self.LEVERAGE = 20  # Leverage
-        self.ENTRY_TIME = (21, 29, 59, 250)  # 09:29:59.250 PM IST (updated time)
+        self.ENTRY_TIME = (1, 29, 59, 250)  # 01:29:59.250 AM IST
         self.time_offset = 0.0
         self.order_plan = []  # To store the sell order plan based on order book
 
@@ -137,28 +137,27 @@ class PrecisionFuturesTrader:
             logging.error(f"Failed to execute sell order plan: {e}")
             raise
 
-    async def _wait_for_funding_fee(self, async_client):
-        """Wait for funding fee to be credited with optimized polling"""
+    async def _wait_for_funding_fee(self, async_client, entry_time):
+        """Wait for funding fee to be credited for the current trade."""
         try:
-            latest_funding_time = 0
+            latest_funding_time = entry_time  # Start checking from the trade entry time
 
             while True:
                 # Fetch funding fee history for the trading pair
                 income_history = await async_client.futures_income_history(
                     symbol=self.SYMBOL,
                     incomeType='FUNDING_FEE',
-                    limit=1  # Fetch only the latest funding fee record
+                    limit=10  # Fetch the latest funding fee records
                 )
 
                 if income_history:
-                    latest_income = income_history[0]
-                    funding_time = latest_income['time'] / 1000  # Convert to seconds
-
-                    # Check if latest funding fee is newer than the stored one
-                    if funding_time > latest_funding_time:
-                        latest_funding_time = funding_time
-                        logging.info(f"Funding fee received: {latest_income}")
-                        return  # Exit the loop as funding fee is detected
+                    for income in income_history:
+                        funding_time = income['time'] / 1000  # Convert to seconds
+                        # Check if funding fee is newer than the entry time
+                        if funding_time > latest_funding_time:
+                            latest_funding_time = funding_time
+                            logging.info(f"Funding fee received: {income}")
+                            return  # Exit the loop as funding fee is detected
 
                 # Sleep for 200ms to reduce delay and stay within Binance rate limits
                 await asyncio.sleep(0.2)
@@ -181,14 +180,17 @@ class PrecisionFuturesTrader:
             entry_target = self._calculate_target(*self.ENTRY_TIME)
             await self._precision_wait(entry_target)
             logging.info("\n=== ENTRY TRIGGERED ===")
+            
+            # Execute BUY order and capture the entry time
+            entry_time = self._get_server_time()  # Capture the trade entry time
             await self._execute_order(async_client, 'BUY')
 
             # Fetch order book and create sell plan immediately after BUY
             await self._fetch_order_book(async_client)
 
-            # Wait for funding fee to be credited
+            # Wait for funding fee to be credited for the current trade
             logging.info("Waiting for funding fee to be credited...")
-            await self._wait_for_funding_fee(async_client)
+            await self._wait_for_funding_fee(async_client, entry_time)
 
             # Exit execution
             logging.info("\n=== EXIT TRIGGERED ===")
