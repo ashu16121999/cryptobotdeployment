@@ -23,11 +23,12 @@ IST = timezone(timedelta(hours=5, minutes=30))  # Indian Standard Time
 
 class PrecisionFuturesTrader:
     def __init__(self):
-        self.SYMBOL = 'IPUSDT'  # Trading pair
-        self.FIXED_QTY = 140  # Quantity
+        self.SYMBOL = 'ANIMEUSDT'  # Trading pair
+        self.FIXED_QTY = 25000  # Quantity
         self.LEVERAGE = 20  # Leverage
-        self.ENTRY_TIME = (1, 29, 59, 150)  # 01:29:59.150 AM IST (updated time)
+        self.ENTRY_TIME = (17, 29, 59, 250)  # 05:29:59.250 PM IST (updated time)
         self.time_offset = 0.0
+        self.order_plan = []  # To store the sell order plan based on order book
 
     async def _verify_connection(self, async_client):
         """Verify API connectivity"""
@@ -85,19 +86,55 @@ class PrecisionFuturesTrader:
             remaining = target_ts - current
             await asyncio.sleep(max(remaining * 0.5, 0.001))
 
-    async def _execute_order(self, async_client, side):
+    async def _execute_order(self, async_client, side, quantity=None):
         """Execute a market order"""
         try:
+            qty = quantity if quantity else self.FIXED_QTY
             await async_client.futures_create_order(
                 symbol=self.SYMBOL,
                 side=side,
                 type='MARKET',
-                quantity=self.FIXED_QTY,
+                quantity=qty,
                 newOrderRespType='FULL'
             )
-            logging.info(f"Market {side} order executed successfully.")
+            logging.info(f"Market {side} order executed successfully for {qty} contracts.")
         except Exception as e:
             logging.error(f"Failed to execute market {side} order: {e}")
+            raise
+
+    async def _fetch_order_book(self, async_client):
+        """Fetch the order book and create a sell order plan"""
+        try:
+            # Fetch the order book (bids only)
+            order_book = await async_client.futures_order_book(symbol=self.SYMBOL, limit=50)
+            bids = order_book['bids']  # List of [price, quantity] at each bid level
+
+            remaining_qty = self.FIXED_QTY
+            self.order_plan = []
+
+            for price, qty in bids:
+                qty = float(qty)  # Convert quantity to float
+                if remaining_qty <= 0:
+                    break
+                chunk_qty = min(remaining_qty, qty)
+                self.order_plan.append((float(price), chunk_qty))
+                remaining_qty -= chunk_qty
+
+            logging.info(f"Sell order plan created based on order book: {self.order_plan}")
+
+        except Exception as e:
+            logging.error(f"Failed to fetch order book: {e}")
+            raise
+
+    async def _execute_sell_plan(self, async_client):
+        """Execute the sell order plan based on pre-fetched order book data"""
+        try:
+            for price, qty in self.order_plan:
+                await self._execute_order(async_client, 'SELL', quantity=qty)
+                logging.info(f"Executed sell order for {qty} contracts at price level {price}")
+
+        except Exception as e:
+            logging.error(f"Failed to execute sell order plan: {e}")
             raise
 
     async def _wait_for_funding_fee(self, async_client):
@@ -146,18 +183,21 @@ class PrecisionFuturesTrader:
             logging.info("\n=== ENTRY TRIGGERED ===")
             await self._execute_order(async_client, 'BUY')
 
+            # Fetch order book and create sell plan immediately after BUY
+            await self._fetch_order_book(async_client)
+
             # Wait for funding fee to be credited
             logging.info("Waiting for funding fee to be credited...")
             await self._wait_for_funding_fee(async_client)
 
             # Exit execution
             logging.info("\n=== EXIT TRIGGERED ===")
-            await self._execute_order(async_client, 'SELL')
+            await self._execute_sell_plan(async_client)
 
         except Exception as e:
             logging.error(f"Strategy failed: {e}")
         finally:
-            await async_client.close_connection()  # Close the AsyncClient connection
+            await async_client.close_connection()
 
 
 if __name__ == "__main__":
