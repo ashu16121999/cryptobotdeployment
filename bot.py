@@ -26,7 +26,7 @@ class PrecisionFuturesTrader:
         self.SYMBOL = 'ANIMEUSDT'  # Trading pair
         self.FIXED_QTY = 25000  # Quantity
         self.LEVERAGE = 20  # Leverage
-        self.ENTRY_TIME = (17, 29, 59, 250)  # 05:29:59.250 PM IST (updated time)
+        self.ENTRY_TIME = (21, 29, 59, 250)  # 09:29:59.250 PM IST (updated time)
         self.time_offset = 0.0
         self.order_plan = []  # To store the sell order plan based on order book
 
