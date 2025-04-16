@@ -23,10 +23,10 @@ IST = timezone(timedelta(hours=5, minutes=30))  # Indian Standard Time
 
 class PrecisionFuturesTrader:
     def __init__(self):
-        self.SYMBOL = 'WCTUSDT'  # Trading pair
-        self.FIXED_QTY = 1100  # Quantity
-        self.LEVERAGE = 22  # Leverage
-        self.ENTRY_TIME = (17, 29, 59, 250)  # 05:29:59.250 PM IST
+        self.SYMBOL = 'BSWUSDT'  # Trading pair
+        self.FIXED_QTY = 25000  # Quantity
+        self.LEVERAGE = 20  # Leverage
+        self.ENTRY_TIME = (21, 29, 59, 250)  # 09:29:59.250 PM IST
         self.time_offset = 0.0
         self.order_plan = []  # To store the sell order plan based on order book
 
@@ -44,18 +44,24 @@ class PrecisionFuturesTrader:
     async def _calibrate_time_sync(self, async_client):
         """Time synchronization with dynamic compensation"""
         measurements = []
-        for _ in range(20):  # Increase the number of measurements for better accuracy
+        for _ in range(20):  # Perform multiple measurements for accuracy
             try:
-                t0 = asyncio.get_event_loop().time()
-                server_time = (await async_client.futures_time())['serverTime'] / 1000
-                t1 = asyncio.get_event_loop().time()
-                measurements.append((t1 - t0, server_time - (t0 + t1) / 2))
+                # Record local time before the API call
+                t0 = asyncio.get_event_loop().time() * 1000  # Convert to milliseconds
+                server_time = (await async_client.futures_time())['serverTime']  # Already in milliseconds
+                # Record local time after the API call
+                t1 = asyncio.get_event_loop().time() * 1000  # Convert to milliseconds
+                # Calculate round-trip latency and offset
+                latency = t1 - t0
+                offset = server_time - ((t0 + t1) / 2)  # Use midpoint for accuracy
+                measurements.append((latency, offset))
             except Exception as e:
                 logging.warning(f"Time sync failed: {e}")
 
+        # Calculate average latency and offset
         avg_latency = sum(m[0] for m in measurements) / len(measurements)
         self.time_offset = sum(m[1] for m in measurements) / len(measurements)
-        logging.info(f"Time synced | Offset: {self.time_offset*1000:.2f}ms | Latency: {avg_latency*1000:.2f}ms")
+        logging.info(f"Time synced | Offset: {self.time_offset:.2f}ms | Latency: {avg_latency:.2f}ms")
 
     async def _set_leverage(self, async_client):
         await async_client.futures_change_leverage(
@@ -64,18 +70,18 @@ class PrecisionFuturesTrader:
         )
 
     def _get_server_time(self):
-        return asyncio.get_event_loop().time() + self.time_offset
+        return asyncio.get_event_loop().time() * 1000 + self.time_offset  # Convert to milliseconds
 
     def _calculate_target(self, hour, minute, second, millisecond):
         """Calculate the target timestamp in Binance server time"""
-        now = datetime.fromtimestamp(self._get_server_time(), IST)
+        now = datetime.fromtimestamp(self._get_server_time() / 1000, IST)
         target = now.replace(
             hour=hour,
             minute=minute,
             second=second,
             microsecond=millisecond * 1000
         )
-        return target.timestamp()
+        return target.timestamp() * 1000  # Convert back to milliseconds
 
     async def _precision_wait(self, target_ts):
         """Enhanced wait with high precision"""
@@ -84,7 +90,7 @@ class PrecisionFuturesTrader:
             if current >= target_ts:
                 return
             remaining = target_ts - current
-            await asyncio.sleep(max(remaining * 0.5, 0.001))
+            await asyncio.sleep(max(remaining / 2000, 0.001))  # Sleep for half the remaining time or 1ms
 
     async def _execute_order(self, async_client, side, quantity=None):
         """Execute a market order"""
@@ -156,19 +162,22 @@ class PrecisionFuturesTrader:
 
                 if income_history:
                     for income in income_history:
-                        funding_time = income['time'] / 1000  # Convert to seconds
+                        funding_time = income['time']  # Already in milliseconds
                         # Check if funding fee is newer than the entry time
                         if funding_time > latest_funding_time:
                             latest_funding_time = funding_time
+
+                            # Execute sell orders immediately after funding fee detection
+                            logging.info("\n=== EXIT TRIGGERED ===")
+                            await self._execute_sell_plan(async_client)
+
+                            # Log funding fee details AFTER sell execution
                             logging.info(f"Funding fee received: {income}")
+
                             return  # Exit the loop as funding fee is detected
 
-                # Reduce sleep interval to 50ms for faster detection
-                await asyncio.sleep(0.05)
-
-        except Exception as e:
-            logging.error(f"Failed to verify funding fee: {e}")
-            raise
+                # Reduce sleep interval to 10ms for faster detection
+                await asyncio.sleep(0.01)
 
     async def execute_strategy(self):
         async_client = await AsyncClient.create(
@@ -195,10 +204,6 @@ class PrecisionFuturesTrader:
             # Wait for funding fee to be credited for the current trade
             logging.info("Waiting for funding fee to be credited...")
             await self._wait_for_funding_fee(async_client, entry_time)
-
-            # Exit execution
-            logging.info("\n=== EXIT TRIGGERED ===")
-            await self._execute_sell_plan(async_client)
 
         except Exception as e:
             logging.error(f"Strategy failed: {e}")
