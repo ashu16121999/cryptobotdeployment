@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+import time  # Import the time module for accurate time synchronization
 
 # Load environment variables
 load_dotenv()
@@ -43,35 +44,41 @@ class PrecisionFuturesTrader:
             raise
 
     async def _calibrate_time_sync(self, async_client):
-        """Time synchronization with dynamic compensation"""
+        """Time synchronization with Binance server time using absolute timestamps."""
         measurements = []
+
         for _ in range(20):  # Perform multiple measurements for accuracy
             try:
-                # Record local time before the API call
-                t0 = asyncio.get_event_loop().time() * 1000  # Convert to milliseconds
-                server_time = (await async_client.futures_time())['serverTime']  # Already in milliseconds
-                # Record local time after the API call
-                t1 = asyncio.get_event_loop().time() * 1000  # Convert to milliseconds
+                # Record local system time before sending the API request
+                t0 = time.time() * 1000  # Current system time in milliseconds
+                server_time = (await async_client.futures_time())['serverTime']  # Binance server time (ms)
+                # Record local system time after receiving the response
+                t1 = time.time() * 1000  # Current system time in milliseconds
+
                 # Calculate round-trip latency and offset
                 latency = t1 - t0
-                offset = server_time - ((t0 + t1) / 2)  # Use midpoint for accuracy
+                offset = server_time - ((t0 + t1) / 2)  # Use the midpoint of t0 and t1 for accuracy
                 measurements.append((latency, offset))
             except Exception as e:
                 logging.warning(f"Time sync failed: {e}")
 
-        # Calculate average latency and offset
-        avg_latency = sum(m[0] for m in measurements) / len(measurements)
-        self.time_offset = sum(m[1] for m in measurements) / len(measurements)
+        # Calculate average latency and offset for better precision
+        avg_latency = sum(m[0] for m in measurements) / len(measurements) if measurements else 0
+        self.time_offset = sum(m[1] for m in measurements) / len(measurements) if measurements else 0
+
+        # Log the results
         logging.info(f"Time synced | Offset: {self.time_offset:.2f}ms | Latency: {avg_latency:.2f}ms")
 
     async def _set_leverage(self, async_client):
+        """Set the leverage for the trading pair"""
         await async_client.futures_change_leverage(
             symbol=self.SYMBOL,
             leverage=self.LEVERAGE
         )
 
     def _get_server_time(self):
-        return asyncio.get_event_loop().time() * 1000 + self.time_offset  # Convert to milliseconds
+        """Get the synchronized server time"""
+        return time.time() * 1000 + self.time_offset  # Convert to milliseconds
 
     def _calculate_target(self, hour, minute, second, millisecond):
         """Calculate the target timestamp in Binance server time"""
@@ -110,30 +117,28 @@ class PrecisionFuturesTrader:
             raise
 
     async def execute_strategy(self):
+        """Main strategy execution"""
+        async_client = await AsyncClient.create(
+            os.getenv('API_KEY'), os.getenv('API_SECRET')
+        )
         try:
-            async_client = await AsyncClient.create(
-                os.getenv('API_KEY'), os.getenv('API_SECRET')
-            )
-            try:
-                await self._verify_connection(async_client)
-                await self._set_leverage(async_client)
-                await self._calibrate_time_sync(async_client)
+            # Verify connection and setup
+            await self._verify_connection(async_client)
+            await self._set_leverage(async_client)
+            await self._calibrate_time_sync(async_client)
 
-                # Entry execution
-                entry_target = self._calculate_target(*self.ENTRY_TIME)
-                await self._precision_wait(entry_target)
-                logging.info("\n=== ENTRY TRIGGERED ===")
+            # Calculate entry target and wait until precise time
+            entry_target = self._calculate_target(*self.ENTRY_TIME)
+            await self._precision_wait(entry_target)
 
-                # Execute BUY order
-                await self._execute_order(async_client, 'BUY')
-
-            except Exception as e:
-                logging.error(f"Strategy execution failed: {e}")
-            finally:
-                await async_client.close_connection()
+            logging.info("\n=== ENTRY TRIGGERED ===")
+            # Execute market buy order
+            await self._execute_order(async_client, 'BUY')
 
         except Exception as e:
-            logging.error(f"Failed to initialize API client: {e}")
+            logging.error(f"Strategy failed: {e}")
+        finally:
+            await async_client.close_connection()
 
 
 if __name__ == "__main__":
