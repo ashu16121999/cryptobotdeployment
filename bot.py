@@ -24,9 +24,9 @@ IST = timezone(timedelta(hours=5, minutes=30))  # Indian Standard Time
 class PrecisionFuturesTrader:
     def __init__(self):
         self.SYMBOL = 'WCTUSDT'  # Trading pair
-        self.FIXED_QTY = 1000  # Quantity
+        self.FIXED_QTY = 1100  # Quantity
         self.LEVERAGE = 22  # Leverage
-        self.ENTRY_TIME = (13, 29, 59, 250)  # 01:29:59.250 PM IST
+        self.ENTRY_TIME = (17, 29, 59, 250)  # 05:29:59.250 PM IST
         self.time_offset = 0.0
         self.order_plan = []  # To store the sell order plan based on order book
 
@@ -86,27 +86,20 @@ class PrecisionFuturesTrader:
             remaining = target_ts - current
             await asyncio.sleep(max(remaining * 0.5, 0.001))
 
-    async def _execute_order(self, async_client, side, quantity=None, price=None):
-        """Execute a market or IOC order"""
+    async def _execute_order(self, async_client, side, quantity=None):
+        """Execute a market order"""
         try:
             qty = quantity if quantity else self.FIXED_QTY
-            order_type = 'LIMIT' if price else 'MARKET'
-            time_in_force = 'IOC' if price else None
-            params = {
-                'symbol': self.SYMBOL,
-                'side': side,
-                'type': order_type,
-                'quantity': qty,
-                'newOrderRespType': 'FULL'
-            }
-            if price:
-                params['price'] = price
-                params['timeInForce'] = time_in_force
-
-            await async_client.futures_create_order(**params)
-            logging.info(f"Order {side} executed successfully for {qty} contracts.")
+            await async_client.futures_create_order(
+                symbol=self.SYMBOL,
+                side=side,
+                type='MARKET',  # Ensuring only market orders are used
+                quantity=qty,
+                newOrderRespType='FULL'
+            )
+            logging.info(f"Market {side} order executed successfully for {qty} contracts.")
         except Exception as e:
-            logging.error(f"Failed to execute {side} order: {e}")
+            logging.error(f"Failed to execute market {side} order: {e}")
             raise
 
     async def _fetch_order_book(self, async_client):
@@ -138,7 +131,7 @@ class PrecisionFuturesTrader:
         try:
             # Create tasks for all sell orders
             tasks = [
-                self._execute_order(async_client, 'SELL', quantity=qty, price=price)
+                self._execute_order(async_client, 'SELL', quantity=qty)
                 for price, qty in self.order_plan
             ]
             # Execute all sell orders in parallel
