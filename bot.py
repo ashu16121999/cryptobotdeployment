@@ -23,10 +23,10 @@ IST = timezone(timedelta(hours=5, minutes=30))  # Indian Standard Time
 
 class PrecisionFuturesTrader:
     def __init__(self):
-        self.SYMBOL = 'MELANIAUSDT'  # Trading pair
-        self.FIXED_QTY = 1200  # Quantity
-        self.LEVERAGE = 20  # Leverage
-        self.ENTRY_TIME = (1, 29, 59, 250)  # 01:29:59.250 AM IST
+        self.SYMBOL = 'WCTUSDT'  # Trading pair
+        self.FIXED_QTY = 1000  # Quantity
+        self.LEVERAGE = 22  # Leverage
+        self.ENTRY_TIME = (13, 29, 59, 250)  # 01:29:59.250 PM IST
         self.time_offset = 0.0
         self.order_plan = []  # To store the sell order plan based on order book
 
@@ -44,7 +44,7 @@ class PrecisionFuturesTrader:
     async def _calibrate_time_sync(self, async_client):
         """Time synchronization with dynamic compensation"""
         measurements = []
-        for _ in range(10):
+        for _ in range(20):  # Increase the number of measurements for better accuracy
             try:
                 t0 = asyncio.get_event_loop().time()
                 server_time = (await async_client.futures_time())['serverTime'] / 1000
@@ -86,20 +86,27 @@ class PrecisionFuturesTrader:
             remaining = target_ts - current
             await asyncio.sleep(max(remaining * 0.5, 0.001))
 
-    async def _execute_order(self, async_client, side, quantity=None):
-        """Execute a market order"""
+    async def _execute_order(self, async_client, side, quantity=None, price=None):
+        """Execute a market or IOC order"""
         try:
             qty = quantity if quantity else self.FIXED_QTY
-            await async_client.futures_create_order(
-                symbol=self.SYMBOL,
-                side=side,
-                type='MARKET',
-                quantity=qty,
-                newOrderRespType='FULL'
-            )
-            logging.info(f"Market {side} order executed successfully for {qty} contracts.")
+            order_type = 'LIMIT' if price else 'MARKET'
+            time_in_force = 'IOC' if price else None
+            params = {
+                'symbol': self.SYMBOL,
+                'side': side,
+                'type': order_type,
+                'quantity': qty,
+                'newOrderRespType': 'FULL'
+            }
+            if price:
+                params['price'] = price
+                params['timeInForce'] = time_in_force
+
+            await async_client.futures_create_order(**params)
+            logging.info(f"Order {side} executed successfully for {qty} contracts.")
         except Exception as e:
-            logging.error(f"Failed to execute market {side} order: {e}")
+            logging.error(f"Failed to execute {side} order: {e}")
             raise
 
     async def _fetch_order_book(self, async_client):
@@ -129,10 +136,14 @@ class PrecisionFuturesTrader:
     async def _execute_sell_plan(self, async_client):
         """Execute the sell order plan based on pre-fetched order book data"""
         try:
-            for price, qty in self.order_plan:
-                await self._execute_order(async_client, 'SELL', quantity=qty)
-                logging.info(f"Executed sell order for {qty} contracts at price level {price}")
-
+            # Create tasks for all sell orders
+            tasks = [
+                self._execute_order(async_client, 'SELL', quantity=qty, price=price)
+                for price, qty in self.order_plan
+            ]
+            # Execute all sell orders in parallel
+            await asyncio.gather(*tasks)
+            logging.info("Sell orders executed successfully in parallel.")
         except Exception as e:
             logging.error(f"Failed to execute sell order plan: {e}")
             raise
@@ -159,8 +170,8 @@ class PrecisionFuturesTrader:
                             logging.info(f"Funding fee received: {income}")
                             return  # Exit the loop as funding fee is detected
 
-                # Sleep for 200ms to reduce delay and stay within Binance rate limits
-                await asyncio.sleep(0.2)
+                # Reduce sleep interval to 50ms for faster detection
+                await asyncio.sleep(0.05)
 
         except Exception as e:
             logging.error(f"Failed to verify funding fee: {e}")
