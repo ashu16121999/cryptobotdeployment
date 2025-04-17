@@ -2,7 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 import os
-from binance import AsyncClient, BinanceSocketManager
+from binance import AsyncClient
 from dotenv import load_dotenv
 import time
 import sys
@@ -29,7 +29,7 @@ class FundingFeeBot:
         self.SYMBOL = 'AERGOUSDT'
         self.FIXED_QTY = 750  # Quantity to trade
         self.LEVERAGE = 7  # Leverage
-        self.ENTRY_TIME = (21, 29, 59, 500)  # 09:29:59:500 PM IST
+        self.ENTRY_TIME = (23, 29, 59, 550)  # 11:29:59:550 PM IST
         self.TIMEOUT_SECONDS = 10  # Safety timeout for funding fee detection
         self.time_offset = 0.0
         self.entry_time = None
@@ -112,29 +112,20 @@ class FundingFeeBot:
             logging.error(f"Failed to execute market {side} order: {e}")
             raise
 
-    async def _monitor_funding_fee_via_websocket(self, async_client):
-        """Monitor funding fee using WebSocket."""
-        try:
-            bsm = BinanceSocketManager(async_client)
-            user_socket = bsm.futures_user_socket()
-
-            async with user_socket as stream:
-                async for message in stream:
-                    if message['e'] == 'INCOME' and message['incomeType'] == 'FUNDING_FEE':
-                        self.funding_timestamp = self._get_server_time()
-                        self.funding_detected = True
-                        await self._execute_order(async_client, 'SELL')  # Exit the position immediately
-                        return
-        except Exception as e:
-            logging.error(f"WebSocket error: {e}. Falling back to REST API polling...")
-            # Ensure WebSocket resources are released cleanly
-            await async_client.close_connection()
-            await self._fallback_polling(async_client)  # Immediately fallback to polling
-
-    async def _fallback_polling(self, async_client):
-        """Fallback method: Poll funding fee using REST API every 10ms."""
+    async def _poll_funding_fee(self, async_client):
+        """Poll funding fee using REST API every 10ms with a 10-second safety timeout."""
+        start_time = self._get_server_time()  # Record when polling starts
         try:
             while True:
+                # Check if the safety timeout has been exceeded
+                elapsed_time = self._get_server_time() - start_time
+                if elapsed_time >= self.TIMEOUT_SECONDS * 1000:  # Convert to milliseconds
+                    logging.error("Safety timeout exceeded while waiting for funding fee. Exiting position.")
+                    # Exit the position by placing a sell order
+                    await self._execute_order(async_client, 'SELL')
+                    return
+
+                # Poll funding fee history
                 income_history = await async_client.futures_income_history(
                     symbol=self.SYMBOL,
                     incomeType='FUNDING_FEE',
@@ -175,9 +166,9 @@ class FundingFeeBot:
             await self._execute_order(async_client, 'BUY')
             self.entry_time = self._get_server_time()  # Record entry time
 
-            # Start WebSocket monitoring
-            logging.info("Starting WebSocket monitoring...")
-            await self._monitor_funding_fee_via_websocket(async_client)
+            # Start REST API polling for funding fee
+            logging.info("Starting funding fee polling...")
+            await self._poll_funding_fee(async_client)
 
             # Log exact timestamps after sell order is executed
             if self.funding_detected:
