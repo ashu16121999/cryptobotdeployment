@@ -27,9 +27,9 @@ IST = timezone(timedelta(hours=5, minutes=30))  # Indian Standard Time
 class FundingFeeBot:
     def __init__(self):
         self.SYMBOL = 'AERGOUSDT'
-        self.FIXED_QTY = 750  # Quantity to trade
+        self.FIXED_QTY = 850  # Quantity to trade
         self.LEVERAGE = 7  # Leverage
-        self.ENTRY_TIME = (23, 29, 59, 550)  # 11:29:59:550 PM IST
+        self.ENTRY_TIME = (1, 29, 59, 550)  # 01:29:59:550 AM IST
         self.TIMEOUT_SECONDS = 10  # Safety timeout for funding fee detection
         self.time_offset = 0.0
         self.entry_time = None
