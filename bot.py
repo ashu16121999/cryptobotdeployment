@@ -5,6 +5,7 @@ import os
 from binance import AsyncClient, BinanceSocketManager
 from dotenv import load_dotenv
 import time
+import sys
 
 # Load environment variables
 load_dotenv()
@@ -28,7 +29,7 @@ class FundingFeeBot:
         self.SYMBOL = 'AERGOUSDT'
         self.FIXED_QTY = 700  # Quantity to trade
         self.LEVERAGE = 6  # Leverage
-        self.ENTRY_TIME = (17, 29, 59, 500)  # 05:29:59:500 PM IST
+        self.ENTRY_TIME = (19, 29, 59, 500)  # 07:29:59:500 PM IST
         self.TIMEOUT_SECONDS = 10  # Safety timeout for funding fee detection
         self.time_offset = 0.0
         self.entry_time = None
@@ -36,6 +37,16 @@ class FundingFeeBot:
         self.sell_timestamp = None  # Exact timestamp of sell execution
         self.funding_timestamp = None  # Exact timestamp of funding fee detection
         self.funding_detected = False
+
+    async def _check_api_permissions(self, async_client):
+        """Verify API permissions immediately when the bot starts."""
+        try:
+            account_info = await async_client.futures_account()
+            logging.info("API permissions verified successfully. Bot is ready to run.")
+        except Exception as e:
+            logging.error(f"API permission verification failed: {e}")
+            await async_client.close_connection()
+            sys.exit(1)  # Exit the script if API verification fails
 
     async def _calibrate_time_sync(self, async_client):
         """Synchronize local time with Binance server time."""
@@ -144,6 +155,9 @@ class FundingFeeBot:
             os.getenv('API_KEY'), os.getenv('API_SECRET')
         )
         try:
+            # Verify API permissions
+            await self._check_api_permissions(async_client)
+
             # Synchronize time with Binance server
             await self._calibrate_time_sync(async_client)
 
