@@ -28,9 +28,8 @@ class PrecisionFuturesTrader:
         self.SYMBOL = 'AERGOUSDT'  # Trading pair
         self.FIXED_QTY = 850  # Quantity
         self.LEVERAGE = 6  # Leverage
-        self.ENTRY_TIME = (13, 29, 59, 250)  # 01:29:59.250 PM IST
+        self.ENTRY_TIME = (15, 29, 59, 250)  # 03:29:59:250 PM IST
         self.time_offset = 0.0
-        self.order_plan = []  # Store the sell order plan
         self.entry_time = None  # To store the entry timestamp
 
     async def _verify_connection(self, async_client):
@@ -112,44 +111,12 @@ class PrecisionFuturesTrader:
             logging.error(f"Failed to execute market {side} order: {e}")
             raise
 
-    async def _fetch_order_book(self, async_client):
-        """Fetch order book and create a sell plan"""
+    async def _monitor_funding_fee_and_exit(self, async_client):
+        """Monitor funding fee and exit position immediately after detection or after 10 seconds."""
         try:
-            order_book = await async_client.futures_order_book(symbol=self.SYMBOL, limit=50)
-            bids = order_book['bids']  # Top 50 bids
-            remaining_qty = self.FIXED_QTY
-            self.order_plan = []
-
-            for price, qty in bids:
-                qty = float(qty)
-                if remaining_qty <= 0:
-                    break
-                chunk_qty = min(remaining_qty, qty)
-                self.order_plan.append((float(price), chunk_qty))
-                remaining_qty -= chunk_qty
-
-            logging.info(f"Sell order plan created: {self.order_plan}")
-        except Exception as e:
-            logging.error(f"Failed to fetch order book: {e}")
-            raise
-
-    async def _execute_sell_plan(self, async_client):
-        """Execute the sell plan"""
-        try:
-            tasks = [
-                self._execute_order(async_client, 'SELL', quantity=qty)
-                for price, qty in self.order_plan
-            ]
-            await asyncio.gather(*tasks)  # Execute all sell orders in parallel
-            logging.info("Sell orders executed successfully.")
-        except Exception as e:
-            logging.error(f"Failed to execute sell plan: {e}")
-            raise
-
-    async def _monitor_funding_fee_and_sell(self, async_client):
-        """Monitor funding fee and execute the sell plan immediately after verification"""
-        try:
+            start_time = self._get_server_time()  # Record the time when monitoring starts
             while True:
+                # Check funding fee history
                 income_history = await async_client.futures_income_history(
                     symbol=self.SYMBOL,
                     incomeType='FUNDING_FEE',
@@ -158,11 +125,22 @@ class PrecisionFuturesTrader:
                 for income in income_history:
                     funding_time = income['time']
                     if funding_time > self.entry_time:  # Ensure it's for the current trade
+                        # Exit the position first
+                        await self._execute_order(async_client, 'SELL')  # Exit position immediately
+                        # Then log the details
                         logging.info("\n=== FUNDING FEE DETECTED ===")
                         logging.info(f"Funding fee credited: {income}")
-                        await self._execute_sell_plan(async_client)  # Execute the sell plan immediately
                         return
-                await asyncio.sleep(0.01)  # Check every 10ms
+
+                # Exit if funding fee is not detected within 10 seconds
+                elapsed_time = (self._get_server_time() - start_time) / 1000  # Convert to seconds
+                if elapsed_time > 10:
+                    logging.warning("Funding fee not detected within 10 seconds. Exiting position as a safety measure.")
+                    await self._execute_order(async_client, 'SELL')  # Exit position
+                    return
+
+                # Check every 10ms
+                await asyncio.sleep(0.01)
         except Exception as e:
             logging.error(f"Error while monitoring funding fee: {e}")
             raise
@@ -187,11 +165,8 @@ class PrecisionFuturesTrader:
             buy_order = await self._execute_order(async_client, 'BUY')
             self.entry_time = self._get_server_time()  # Capture entry time for funding fee monitoring
 
-            # Create sell plan immediately after buying
-            await self._fetch_order_book(async_client)
-
-            # Monitor funding fees and sell in parallel
-            await self._monitor_funding_fee_and_sell(async_client)
+            # Monitor funding fees and exit
+            await self._monitor_funding_fee_and_exit(async_client)
 
         except Exception as e:
             logging.error(f"Strategy failed: {e}")
