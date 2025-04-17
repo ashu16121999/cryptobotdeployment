@@ -27,9 +27,9 @@ IST = timezone(timedelta(hours=5, minutes=30))  # Indian Standard Time
 class FundingFeeBot:
     def __init__(self):
         self.SYMBOL = 'AERGOUSDT'
-        self.FIXED_QTY = 700  # Quantity to trade
-        self.LEVERAGE = 6  # Leverage
-        self.ENTRY_TIME = (19, 29, 59, 500)  # 07:29:59:500 PM IST
+        self.FIXED_QTY = 750  # Quantity to trade
+        self.LEVERAGE = 7  # Leverage
+        self.ENTRY_TIME = (21, 29, 59, 500)  # 09:29:59:500 PM IST
         self.TIMEOUT_SECONDS = 10  # Safety timeout for funding fee detection
         self.time_offset = 0.0
         self.entry_time = None
@@ -127,6 +127,8 @@ class FundingFeeBot:
                         return
         except Exception as e:
             logging.error(f"WebSocket error: {e}. Falling back to REST API polling...")
+            # Ensure WebSocket resources are released cleanly
+            await async_client.close_connection()
             await self._fallback_polling(async_client)  # Immediately fallback to polling
 
     async def _fallback_polling(self, async_client):
