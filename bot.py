@@ -27,8 +27,8 @@ class PrecisionFuturesTrader:
     def __init__(self):
         self.SYMBOL = 'AERGOUSDT'  # Trading pair
         self.FIXED_QTY = 850  # Quantity
-        self.LEVERAGE =  6 # Leverage
-        self.ENTRY_TIME = (11, 29, 59, 250)  # 11:29:59.250 AM IST
+        self.LEVERAGE = 6  # Leverage
+        self.ENTRY_TIME = (13, 29, 59, 250)  # 01:29:59.250 PM IST
         self.time_offset = 0.0
         self.order_plan = []  # Store the sell order plan
         self.entry_time = None  # To store the entry timestamp
